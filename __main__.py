@@ -617,6 +617,7 @@ class RunViewer(object):
             checked = item.checkState()
             row = self.shot_model.indexFromItem(item).row()
             colour_item = self.shot_model.item(row, SHOT_MODEL__COLOUR_INDEX)
+            check_shutter = self.shot_model.item(row, SHOT_MODEL__SHUTTER_INDEX)
 
             if checked:
                 colour = colour_item.data(Qt.UserRole)
@@ -635,6 +636,11 @@ class RunViewer(object):
                 self.ui.markers_comboBox.model().item(shot_combobox_index).setEnabled(True)
                 if self.ui.markers_comboBox.currentIndex() == 0:
                     self.ui.markers_comboBox.setCurrentIndex(shot_combobox_index)
+                if item.data().shutter_times != {}:
+                    check_shutter.setEnabled(True)
+                else:
+                    check_shutter.setEnabled(False)
+                    check_shutter.setToolTip("This shot doesn't contain shutter markers")
             else:
                 # colour = None
                 # icon = None
@@ -643,6 +649,7 @@ class RunViewer(object):
                 if shot_combobox_index == self.ui.markers_comboBox.currentIndex():
                     self.ui.markers_comboBox.setCurrentIndex(0)
                 colour_item.setEditable(False)
+                check_shutter.setEnabled(False)
 
             # model.setData(index, editor.itemIcon(editor.currentIndex()),
             # model.setData(index, editor.itemData(editor.currentIndex()), Qt.UserRole)
@@ -678,6 +685,7 @@ class RunViewer(object):
         check_shutter = QStandardItem()
         check_shutter.setCheckable(True)
         check_shutter.setCheckState(Qt.Unchecked)  # options are Qt.Checked OR Qt.Unchecked
+        check_shutter.setEnabled(False)
         check_shutter.setToolTip("Toggle shutter markers")
         items.append(check_shutter)
 
@@ -835,25 +843,7 @@ class RunViewer(object):
                             self.plot_items[channel][shot] = plot_item
 
                         # Add Shutter Markers of newly ticked Shots
-                        if shot not in self.shutter_lines[channel] and channel in shot.shutter_times:
-                            self.shutter_lines[channel][shot] = [[], []]
-
-                            open_color = QColor(0, 255, 0)
-                            close_color = QColor(255, 0, 0)
-
-                            for t, val in shot.shutter_times[channel].items():
-                                if self.scale_time:
-                                    t = self.scaler(t)
-                                if val:  # val != 0, shutter open
-                                    line = self.plot_widgets[channel].addLine(x=t, pen=pg.mkPen(color=open_color, width=4., style=Qt.DotLine))
-                                    self.shutter_lines[channel][shot][1].append(line)
-                                    if not shutters_checked:
-                                        line.hide()
-                                else:  # else shutter close
-                                    line = self.plot_widgets[channel].addLine(x=t, pen=pg.mkPen(color=close_color, width=4., style=Qt.DotLine))
-                                    self.shutter_lines[channel][shot][0].append(line)
-                                    if not shutters_checked:
-                                        line.hide()
+                        self.add_shutter_markers(shot, channel, shutters_checked)
 
                     for t, m in self.all_markers.items():
                         color = m['color']
@@ -919,34 +909,32 @@ class RunViewer(object):
                     units = shot.traces[channel][2]
 
                 # Add Shutter Markers of ticked Shots
-                if shot not in self.shutter_lines[channel] and channel in shot.shutter_times:
-                    self.shutter_lines[channel][shot] = [[], []]
-
-                    if len(ticked_shots) < 2:
-                        open_color = QColor(0, 255, 0)
-                        close_color = QColor(255, 0, 0)
-                    else:
-                        open_color = QColor(colour)
-                        close_color = QColor(colour)
-
-                    for t, val in shot.shutter_times[channel].items():
-                        if self.scale_time:
-                            t = self.scaler(t)
-                        if val:  # val != 0, shutter open
-                            line = self.plot_widgets[channel].addLine(x=t, pen=pg.mkPen(color=open_color, width=4., style=Qt.DotLine))
-                            self.shutter_lines[channel][shot][1].append(line)
-                            if not shutters_checked:
-                                line.hide()
-                        else:  # else shutter close
-                            line = self.plot_widgets[channel].addLine(x=t, pen=pg.mkPen(color=close_color, width=4., style=Qt.DotLine))
-                            self.shutter_lines[channel][shot][0].append(line)
-                            if not shutters_checked:
-                                line.hide()
+                self.add_shutter_markers(shot, channel, shutters_checked)
 
         if has_units:
             self.plot_widgets[channel].setLabel('left', "", units=units)
         else:
             self.plot_widgets[channel].setLabel('left', "")
+
+    def add_shutter_markers(self, shot, channel, shutters_checked):
+        if shot not in self.shutter_lines[channel] and channel in shot.shutter_times:
+            self.shutter_lines[channel][shot] = [[], []]
+
+            open_color = QColor(0, 255, 0)
+            close_color = QColor(255, 0, 0)
+
+            for t, val in shot.shutter_times[channel].items():
+                scaled_t = t
+                if val:  # val != 0, shutter open
+                    line = self.plot_widgets[channel].addLine(x=scaled_t, pen=pg.mkPen(color=open_color, width=4., style=Qt.DotLine))
+                    self.shutter_lines[channel][shot][1].append(line)
+                    if not shutters_checked:
+                        line.hide()
+                else:  # else shutter close
+                    line = self.plot_widgets[channel].addLine(x=scaled_t, pen=pg.mkPen(color=close_color, width=4., style=Qt.DotLine))
+                    self.shutter_lines[channel][shot][0].append(line)
+                    if not shutters_checked:
+                        line.hide()
 
     def on_x_range_changed(self, *args):
         # print 'x range changed'
@@ -1365,8 +1353,9 @@ class Shot(object):
             self.device_names = file['devices'].keys()
 
             # Get Shutter Calibrations
-            for name, open_delay, close_delay in numpy.array(file['calibrations']['Shutter']):
-                self._shutter_calibrations[name] = [open_delay, close_delay]
+            if 'calibrations' in file and 'Shutter' in file['calibrations']:
+                for name, open_delay, close_delay in numpy.array(file['calibrations']['Shutter']):
+                    self._shutter_calibrations[name] = [open_delay, close_delay]
 
     def delete_cache(self):
         self._channels = None
@@ -1413,12 +1402,11 @@ class Shot(object):
     def add_shutter_times(self, shutters):
         for name, open_state in shutters:
             x_values, y_values = self._traces[name]
-            values = zip(x_values, y_values)
-            if len(values) > 0:
-                change_values = [values[0]]
-                for i in range(1, len(values)):
-                    if values[i][1] != values[i - 1][1]:
-                        change_values.append(values[i])
+            if len(x_values) > 0:
+                change_indices = numpy.where(y_values[:-1] != y_values[1:])[0]
+                change_indices += 1 # use the index of the value that is changed to
+                change_values = zip(x_values[change_indices], y_values[change_indices])
+                change_values.insert(0, (x_values[0], y_values[0])) # insert first value
                 self._shutter_times[name] = {x_value + (self._shutter_calibrations[name][0] if y_value == open_state else self._shutter_calibrations[name][1]): 1 if y_value == open_state else 0 for x_value, y_value in change_values}
 
     def _load_device(self, device, clock=None):
